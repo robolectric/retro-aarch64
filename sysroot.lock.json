@@ -1,0 +1,59 @@
+{
+  "vault": "https://vault.centos.org/altarch/7.9.2009",
+  "packages": [
+    {
+      "name": "glibc",
+      "epoch": "0",
+      "version": "2.17",
+      "release": "326.el7_9.3",
+      "url": "https://vault.centos.org/altarch/7.9.2009/updates/aarch64/Packages/glibc-2.17-326.el7_9.3.aarch64.rpm",
+      "size": 3754680,
+      "sha256": "98d52e08fed74855f8bec16abd64c6bc50554bb0efe175e7f3c490c9f24de00a"
+    },
+    {
+      "name": "glibc-devel",
+      "epoch": "0",
+      "version": "2.17",
+      "release": "326.el7_9.3",
+      "url": "https://vault.centos.org/altarch/7.9.2009/updates/aarch64/Packages/glibc-devel-2.17-326.el7_9.3.aarch64.rpm",
+      "size": 1128696,
+      "sha256": "884cb8c9aae5d2943dfa8fdb48a9afe7de1cbd171c7738605dcf4196c3e8b24d"
+    },
+    {
+      "name": "glibc-headers",
+      "epoch": "0",
+      "version": "2.17",
+      "release": "326.el7_9.3",
+      "url": "https://vault.centos.org/altarch/7.9.2009/updates/aarch64/Packages/glibc-headers-2.17-326.el7_9.3.aarch64.rpm",
+      "size": 690052,
+      "sha256": "299b2ec1e39fc560ef7123d4ed705f906d6ad4c604e2a6fa8b0dc7eadba789df"
+    },
+    {
+      "name": "kernel-headers",
+      "epoch": "0",
+      "version": "4.18.0",
+      "release": "348.20.1.el7",
+      "url": "https://vault.centos.org/altarch/7.9.2009/updates/aarch64/Packages/kernel-headers-4.18.0-348.20.1.el7.aarch64.rpm",
+      "size": 8641048,
+      "sha256": "f22a6a3ede39bb2f3ee9523559c1d7cef563d21ef190a8aaf0aae0428824ce6c"
+    },
+    {
+      "name": "libgcc",
+      "epoch": "0",
+      "version": "4.8.5",
+      "release": "44.el7",
+      "url": "https://vault.centos.org/altarch/7.9.2009/os/aarch64/Packages/libgcc-4.8.5-44.el7.aarch64.rpm",
+      "size": 98992,
+      "sha256": "4f44c5be70ed9d8d74c2a616cde92a842b15eefaccd766959e5fbd7fbe965d2d"
+    },
+    {
+      "name": "gcc",
+      "epoch": "0",
+      "version": "4.8.5",
+      "release": "44.el7",
+      "url": "https://vault.centos.org/altarch/7.9.2009/os/aarch64/Packages/gcc-4.8.5-44.el7.aarch64.rpm",
+      "size": 13418520,
+      "sha256": "432c6aabbe21d3885e341ec137e3110424179e142295d49e5693bf3c87cff9cd"
+    }
+  ]
+}
