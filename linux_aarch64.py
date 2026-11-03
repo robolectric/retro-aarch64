@@ -212,13 +212,12 @@ def main():
     gcc_version = next((sysroot / "lib/gcc" / make_sysroot.GCC_TRIPLE).iterdir()).name
 
     # 2. The x86_64 host build (also the reference for the exports) and the arm64 device graph.
+    # Soong runs every time: it is incremental, and the checkout may have been synced since the
+    # graphs and the x86_64 library were made, which would leave both stale.
     x86_target = host_library(aosp, args.host_product, directory, name)
-    if not (aosp / x86_target).exists():
-        soong(aosp, args.host_product, x86_target)
+    soong(aosp, args.host_product, x86_target)
+    soong(aosp, args.device_arm_product, "nothing", DEVICE_ARM_OUT)
     device_arm_ninja = ninja_rewrite.soong_ninja(aosp, DEVICE_ARM_OUT, args.device_arm_product)
-    if not device_arm_ninja.exists():
-        soong(aosp, args.device_arm_product, "nothing", DEVICE_ARM_OUT)
-        device_arm_ninja = ninja_rewrite.soong_ninja(aosp, DEVICE_ARM_OUT, args.device_arm_product)
     host_ninja = ninja_rewrite.soong_ninja(aosp, "out", args.host_product)
     clang = clang_dir(aosp, host_ninja)
 

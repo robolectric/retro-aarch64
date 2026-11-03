@@ -227,16 +227,23 @@ class Toolchain:
 
         tokens = []
         for token in TOOLCHAIN_VAR.sub(variable, value).split(" "):
-            new = token
-            for x86, arm in self.literals:
-                new = new.replace(x86, arm)
-            new = self.rust_rlib(new)
+            new = self.retarget(token)
             if new != token:
-                for x86, arm in zip(PREBUILT.findall(token), PREBUILT.findall(new)):
+                # Prebuilt paths can sit behind other toolchain variables (older versions name
+                # compiler-rt as ${...ClangAsanLibDir}/libclang_rt.builtins-x86_64.a), so they
+                # are found in the token with those variables expanded.
+                expanded = expand(token, self.host_vars)
+                for x86, arm in zip(PREBUILT.findall(expanded),
+                                    PREBUILT.findall(self.retarget(expanded))):
                     if arm != x86 and not arm.startswith(SYSROOT):
                         self.prebuilts[arm] = x86
             tokens.append("-march=armv8-a" if new == "-m64" else new)
         return " ".join(tokens)
+
+    def retarget(self, token):
+        for x86, arm in self.literals:
+            token = token.replace(x86, arm)
+        return self.rust_rlib(token)
 
     def retargets(self, path):
         """Whether `path` is an x86_64 toolchain prebuilt with an aarch64 counterpart."""

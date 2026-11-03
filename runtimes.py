@@ -51,21 +51,42 @@ def llvm_sources(clang, cache, subdirs):
         log(f"Fetching toolchain/llvm-project {revision[:12]} {subdir}")
         request = urllib.request.Request(f"{GITILES}/{revision}/{subdir}.tar.gz",
                                          headers={"User-Agent": "aosp-linux-aarch64"})
+        data = None
         for attempt in range(6):  # Gitiles answers 5xx under load
             try:
                 with urllib.request.urlopen(request, timeout=900) as response:
                     data = response.read()
                 break
             except urllib.error.HTTPError as error:
+                # Gitiles answers 400 (or 404) for a path the revision does not have: older
+                # llvm-project revisions have no top-level cmake/ (it came with LLVM 14).
+                if error.code in (400, 404) and not tree_has(revision, subdir):
+                    log(f"  toolchain/llvm-project {revision[:12]} has no {subdir}; skipping")
+                    break
                 if error.code < 500 or attempt == 5:
                     raise
                 time.sleep(30 * (attempt + 1))
         shutil.rmtree(destination, ignore_errors=True)
         destination.mkdir(parents=True)
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            tar.extractall(destination, filter="data")
+        if data is not None:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                tar.extractall(destination, filter="data")
         (destination / ".complete").touch()
     return root
+
+
+def tree_has(revision, path):
+    """Whether llvm-project has `path` at `revision` (Gitiles answers 404 if not)."""
+    request = urllib.request.Request(
+        f"{GITILES.removesuffix('/+archive')}/+/{revision}/{path}?format=JSON",
+        headers={"User-Agent": "aosp-linux-aarch64"})
+    try:
+        with urllib.request.urlopen(request, timeout=60):
+            return True
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return False
+        raise
 
 
 class Builder:
@@ -100,10 +121,15 @@ class Builder:
     def builtins(self):
         source = llvm_sources(self.clang, self.cache, ["compiler-rt", "llvm/cmake", "cmake"])
         build = self.cache / f"{self.clang.name}-builtins"
+        # Older compiler-rt versions (LLVM 12) run llvm-config if they find one, which the
+        # builtins do not need: the build machine's can be a different LLVM version that fails,
+        # and the clang prebuilt's names LLVM libraries the prebuilt does not ship. OFF is a
+        # value find_program keeps and `if (LLVM_CONFIG_PATH)` treats as unset.
         self.cmake(source / "compiler-rt/lib/builtins", build,
                    "-DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON",
                    "-DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=ON",  # like the x86_64 Linux builtins
-                   f"-DLLVM_CMAKE_DIR={source / 'llvm/cmake/modules'}", link_tests=False)
+                   f"-DLLVM_CMAKE_DIR={source / 'llvm/cmake/modules'}",
+                   "-DLLVM_CONFIG_PATH=OFF", link_tests=False)
         return next(build.glob("lib/**/libclang_rt.builtins*.a"))
 
     def ubsan_minimal(self):
