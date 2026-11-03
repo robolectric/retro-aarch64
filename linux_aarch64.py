@@ -43,10 +43,40 @@ def log(message):
 def soong(aosp, product, target, out_dir="out"):
     """Runs `m target` for `product` with build/envsetup.sh, which needs bash."""
     # Newer branches select a release configuration too: lunch <product>-<release>-<variant>.
-    combo = f"{product}-trunk_staging-eng" if (aosp / "build/release").exists() else f"{product}-eng"
+    # trunk_staging where the branch has it, otherwise the release the branch ships.
+    release = aosp / "build/release"
+    if (release / "release_configs/trunk_staging.textproto").exists():
+        combo = f"{product}-trunk_staging-eng"
+    elif release.exists():
+        combo = f"{product}-aosp_current-eng"
+    else:
+        combo = f"{product}-eng"
     log(f"m {target} ({combo}, OUT_DIR={out_dir})")
-    subprocess.run(["bash", "-c", f"export OUT_DIR={out_dir}; source build/envsetup.sh >/dev/null"
+    # Public trees can name modules AOSP does not publish (android16-release's conscrypt APEX
+    # names "opensourcerequest"); with this a missing module only fails what builds it.
+    subprocess.run(["bash", "-c", f"export OUT_DIR={out_dir} ALLOW_MISSING_DEPENDENCIES=true;"
+                    " source build/envsetup.sh >/dev/null"
                     f" && lunch {combo} >/dev/null && m {target}"], cwd=aosp, check=True)
+
+
+def host_library(aosp, product, directory, name):
+    """The path of the library's x86_64 host build, from Soong's graph (newer versions put the
+    variant's outputs under a hash directory)."""
+    ninja = ninja_rewrite.soong_ninja(aosp, "out", product)
+    if not ninja.exists():
+        soong(aosp, product, "nothing")
+        ninja = ninja_rewrite.soong_ninja(aosp, "out", product)
+    path = re.compile(rf"out/soong/\.intermediates/{re.escape(directory)}/{re.escape(name)}/"
+                      rf"{ninja_rewrite.HOST}_shared/(?:[0-9a-f]{{32}}/)?{re.escape(name)}\.so"
+                      r"(?=[\s:|]|$)")
+    stem = ninja.name.removesuffix(".ninja")  # shards: build.<product>.ninja.N or .N.ninja
+    shards = sorted({*ninja.parent.glob(f"{stem}.ninja.[0-9]*"), *ninja.parent.glob(f"{stem}.[0-9]*.ninja")})
+    for shard in [ninja, *shards]:
+        with open(shard, errors="replace") as lines:
+            for line in lines:
+                if f"/{name}.so" in line and (match := path.search(line)):
+                    return match.group(0)
+    raise SystemExit(f"{directory}:{name} has no {ninja_rewrite.HOST} shared library in {ninja}")
 
 
 def clang_dir(aosp, host_ninja):
@@ -70,7 +100,20 @@ def exports(clang_bin, library):
             if " GLOBAL " in line and " UND " not in line}
 
 
-def verify(clang_bin, arm_library, x86_library):
+def rust_std_crates(aosp):
+    """The crates of the Rust standard library (core, alloc, std and the crates std uses)."""
+    rlibs = aosp.glob("prebuilts/rust*/linux-x86/*/lib/rustlib/x86_64-unknown-linux-gnu/"
+                      "lib/lib*.rlib")
+    return {re.sub(r"^lib|-[0-9a-f]+\.rlib$", "", rlib.name) for rlib in rlibs}
+
+
+def rust_crate(symbol):
+    """The crate a v0-mangled Rust symbol belongs to (the first crate root in its path)."""
+    match = re.search(r"C(?:s[0-9A-Za-z]*_)?(\d+)", symbol) if symbol.startswith("_R") else None
+    return match and symbol[match.end():match.end() + int(match.group(1))]
+
+
+def verify(clang_bin, arm_library, x86_library, std_crates):
     if "AArch64" not in readelf(clang_bin, "-h", str(arm_library)):
         raise SystemExit(f"{arm_library}: not an AArch64 ELF")
     versions = set(re.findall(r"GLIBC_(\d+(?:\.\d+)+)",
@@ -80,8 +123,12 @@ def verify(clang_bin, arm_library, x86_library):
         raise SystemExit(f"{arm_library}: requires GLIBC_{newest}")
     needed = re.findall(r"Shared library: \[(.+?)\]", readelf(clang_bin, "-d", str(arm_library)))
     # Everything the x86_64 library exports, except its x86 SIMD code (the arm64 build has NEON
-    # code instead), with va_list mangled the aarch64 way.
-    abi = lambda symbols: {s.replace("P13__va_list_tag", "St9__va_list") for s in symbols}
+    # code instead), with va_list mangled the aarch64 way, and without the crate hashes in Rust
+    # names (the aarch64 standard library is a different build of the same crates). What the
+    # Rust standard library's own code exports depends on how it was built, not on the library.
+    abi = lambda symbols: {re.sub(r"Cs[0-9A-Za-z]+_|17h[0-9a-f]{16}E", "",
+                                  s.replace("P13__va_list_tag", "St9__va_list")) for s in symbols
+                           if rust_crate(s) not in std_crates}
     missing = {s for s in abi(exports(clang_bin, x86_library)) - abi(exports(clang_bin, arm_library))
                if not re.search(r"SSE\d|SSSE3|AVX", s)}
     if missing:
@@ -103,19 +150,42 @@ int main(int argc, char **argv) {
 """
 
 
-def load_test(clang, sysroot, library):
+def built_dependencies(aosp, clang_bin, sysroot, library):
+    """The directories of the shared libraries the library needs that are not glibc's: the ones
+    the aarch64 build made (some branches link some AOSP libraries as shared libraries)."""
+    graph = (aosp / OUT_NINJA).read_text(errors="replace")
+    directories, pending, seen = set(), [library], set()
+    while pending:
+        for needed in re.findall(r"Shared library: \[(.+?)\]", readelf(clang_bin, "-d", str(pending.pop()))):
+            if needed in seen or list((sysroot / "sysroot").glob(f"*/{needed}")) + \
+                    list((sysroot / "sysroot").glob(f"usr/*/{needed}")):
+                continue
+            seen.add(needed)
+            match = re.search(rf"out/soong/\.intermediates/\S*?/{ninja_rewrite.ARM_HOST}_shared/"
+                              rf"(?:[0-9a-f]{{32}}/)?{re.escape(needed)}(?=[\s:|]|$)", graph, re.M)
+            if match:
+                directories.add(str((aosp / match.group(0)).parent))
+                pending.append(aosp / match.group(0))
+    if seen:
+        log(f"Not self-contained: needs AOSP shared libraries {sorted(seen)}")
+    return sorted(directories)
+
+
+def load_test(clang, sysroot, library, dependencies=()):
     """dlopens the library under qemu-aarch64 with the sysroot's glibc and finds JNI_OnLoad."""
     qemu = next((q for q in ("qemu-aarch64", "qemu-aarch64-static") if shutil.which(q)), None)
     if not qemu:
         log("qemu-aarch64 not found; skipping the load test")
         return
+    environment = ["-E", f"LD_LIBRARY_PATH={':'.join(dependencies)}"] if dependencies else []
     with tempfile.TemporaryDirectory() as work:
         source, loader = Path(work) / "load.c", Path(work) / "load"
         source.write_text(LOAD_TEST)
         subprocess.run([str(clang / "bin/clang"), "--target=aarch64-linux-gnu",
                         f"--sysroot={sysroot / 'sysroot'}", f"--gcc-toolchain={sysroot}",
                         "-fuse-ld=lld", str(source), "-ldl", "-o", str(loader)], check=True)
-        result = subprocess.run([qemu, "-L", str(sysroot / "sysroot"), str(loader), str(library)],
+        result = subprocess.run([qemu, "-L", str(sysroot / "sysroot"), *environment, str(loader),
+                                 str(library)],
                                 capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(f"load test failed: {result.stdout}{result.stderr}")
@@ -133,8 +203,6 @@ def main():
     args = parser.parse_args()
     aosp = args.checkout.resolve()
     directory, name = args.module.split(":")
-    x86_target = (f"out/soong/.intermediates/{directory}/{name}/"
-                  f"{ninja_rewrite.HOST}_shared/{name}.so")
 
     # 1. The sysroot: the CentOS packages, then this tree's updates of its x86_64 headers.
     sysroot = aosp / make_sysroot.PREBUILT_DIR
@@ -144,6 +212,7 @@ def main():
     gcc_version = next((sysroot / "lib/gcc" / make_sysroot.GCC_TRIPLE).iterdir()).name
 
     # 2. The x86_64 host build (also the reference for the exports) and the arm64 device graph.
+    x86_target = host_library(aosp, args.host_product, directory, name)
     if not (aosp / x86_target).exists():
         soong(aosp, args.host_product, x86_target)
     device_arm_ninja = ninja_rewrite.soong_ninja(aosp, DEVICE_ARM_OUT, args.device_arm_product)
@@ -170,8 +239,9 @@ def main():
     log(f"ninja {arm_target}")
     subprocess.run([str(aosp / "prebuilts/build-tools/linux-x86/bin/ninja"), "-f", OUT_NINJA,
                     arm_target], cwd=aosp, check=True)
-    verify(clang / "bin", aosp / arm_target, aosp / x86_target)
-    load_test(clang, sysroot, aosp / arm_target)
+    verify(clang / "bin", aosp / arm_target, aosp / x86_target, rust_std_crates(aosp))
+    load_test(clang, sysroot, aosp / arm_target,
+              built_dependencies(aosp, clang / "bin", sysroot, aosp / arm_target))
 
 
 if __name__ == "__main__":

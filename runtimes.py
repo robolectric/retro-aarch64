@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -49,8 +51,15 @@ def llvm_sources(clang, cache, subdirs):
         log(f"Fetching toolchain/llvm-project {revision[:12]} {subdir}")
         request = urllib.request.Request(f"{GITILES}/{revision}/{subdir}.tar.gz",
                                          headers={"User-Agent": "aosp-linux-aarch64"})
-        with urllib.request.urlopen(request, timeout=900) as response:
-            data = response.read()
+        for attempt in range(6):  # Gitiles answers 5xx under load
+            try:
+                with urllib.request.urlopen(request, timeout=900) as response:
+                    data = response.read()
+                break
+            except urllib.error.HTTPError as error:
+                if error.code < 500 or attempt == 5:
+                    raise
+                time.sleep(30 * (attempt + 1))
         shutil.rmtree(destination, ignore_errors=True)
         destination.mkdir(parents=True)
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
@@ -112,22 +121,34 @@ class Builder:
         return archive
 
     def libcxx(self):
-        """libc++ with libc++abi merged in, unwinding left to libgcc, like the x86_64 one."""
+        """libc++ with libc++abi merged in, and LLVM's libunwind if the x86_64 one has it."""
         if getattr(self, "_libcxx", None):
             return self._libcxx
         source = llvm_sources(self.clang, self.cache, [
             "runtimes", "libcxx", "libcxxabi", "libunwind", "cmake", "llvm/cmake",
             "llvm/utils/llvm-lit", "third-party", "libc"])
+        reference = self.clang / "lib/x86_64-unknown-linux-gnu/libc++.a"
+        unwinder = reference.exists() and " T _Unwind_RaiseException\n" in subprocess.run(
+            [self.clang / "bin/llvm-nm", "--defined-only", reference], check=True,
+            capture_output=True, text=True).stdout
         build = self.cache / f"{self.clang.name}-libcxx"
-        self.cmake(source / "runtimes", build, "-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi",
+        shutil.rmtree(build, ignore_errors=True)  # a fresh configuration
+        self.cmake(source / "runtimes", build,
+                   f"-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi{';libunwind' if unwinder else ''}",
                    f"-DLLVM_DEFAULT_TARGET_TRIPLE={RUST_TRIPLE}",
-                   # Like the x86_64 libraries: libc++abi merged into libc++.a and libc++.so,
-                   # libgcc linked statically, so libc++.so needs only glibc.
+                   # Like the x86_64 libraries: libc++abi (and LLVM's libunwind, where the
+                   # x86_64 one has it) merged into libc++.a and libc++.so, libgcc linked
+                   # statically, so libc++.so needs only glibc.
                    "-DLIBCXX_ENABLE_SHARED=ON", "-DLIBCXXABI_ENABLE_SHARED=OFF",
                    "-DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON",
                    "-DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=ON",
                    "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc",
-                   "-DLIBCXXABI_USE_LLVM_UNWINDER=OFF",
+                   "-DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON",  # soname libc++.so, like x86_64
+                   f"-DLIBCXXABI_USE_LLVM_UNWINDER={'ON' if unwinder else 'OFF'}",
+                   "-DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON",
+                   "-DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=ON",
+                   "-DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=ON",
+                   "-DLIBUNWIND_ENABLE_SHARED=OFF", "-DLIBUNWIND_INCLUDE_TESTS=OFF",
                    "-DLIBCXX_INCLUDE_TESTS=OFF", "-DLIBCXX_INCLUDE_BENCHMARKS=OFF",
                    "-DLIBCXXABI_INCLUDE_TESTS=OFF", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
                    "-DLIBCXX_HARDENING_MODE=none",
@@ -155,6 +176,19 @@ class Builder:
                f"CARGO_TARGET_{RUST_TRIPLE.upper().replace('-', '_')}_LINKER": str(linker),
                f"CC_{RUST_TRIPLE.replace('-', '_')}": str(linker),
                "CARGO_PROFILE_RELEASE_DEBUG": "2"}
+        # Some cargo versions look vendored crates up as vendor/<name>-<version>; the prebuilt's
+        # rust-src has them as vendor/<name>, so they get their versioned names too.
+        vendor = toolchain / "lib/rustlib/src/rust/vendor"
+        for crate in sorted(vendor.iterdir()) if vendor.is_dir() else []:
+            manifest = crate / "Cargo.toml"
+            if crate.is_symlink() or not manifest.exists():
+                continue
+            text = manifest.read_text()
+            name = re.search(r'^name = "([^"]+)"', text, re.M).group(1)
+            version = re.search(r'^version = "([^"]+)"', text, re.M).group(1)
+            versioned = vendor / f"{name}-{version}"
+            if not versioned.exists():
+                versioned.symlink_to(crate.name)
         log(f"Building the Rust standard library for {RUST_TRIPLE} with {bin_dir / 'rustc'}")
         run([bin_dir / "cargo", "build", "--release", "-Zbuild-std=std,panic_unwind,panic_abort",
              "--target", RUST_TRIPLE], cwd=work, env=env, stdout=subprocess.DEVNULL)

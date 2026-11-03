@@ -13,7 +13,13 @@ build graphs, so it follows each branch's sources and flags, and changes no Andr
 | Tree | Module | Result |
 |---|---|---|
 | `android12-hostruntime-dev` | `frameworks/base/core/jni:librobolectric-nativeruntime` (the default) | builds and passes the checks |
+| `android15-release`, `android15-qpr2-release` | `frameworks/base/core/jni:libandroid_runtime` | builds and passes the checks |
+| `android16-release` | `frameworks/base/core/jni:libandroid_runtime` | builds and passes the checks |
 | `android17-release` | `frameworks/base/core/jni:libandroid_runtime` | builds and passes the checks |
+
+The build links what the tree links: where a branch links Android libraries as shared libraries on
+the host (the public Android 15 and 16 branches do), the checks name them, and the load test
+finds them in the build.
 
 ## What it does
 

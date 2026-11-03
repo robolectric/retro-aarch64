@@ -40,6 +40,7 @@ PREBUILT = re.compile(r"prebuilts/[^\s=:,$]+")
 INTERMEDIATE = re.compile(r"out/soong/\.intermediates/[^\s:=,]+")
 TOOLCHAIN_VAR = re.compile(r"\$\{(g\.android\.soong\.(?:cc|rust)\.config\.(Linux\w*))\}")
 VARIANT = re.compile(rf"/({ARCHES})([A-Za-z0-9_-]*)(?=/)")
+VARIANT_HASH = re.compile(r"(?<=/VARIANT)([A-Za-z0-9_-]*)/[0-9a-f]{32}/")
 MODULE_VAR = re.compile(rf"^(m\..+?_(?:{ARCHES})[A-Za-z0-9_-]*)\.(\w+)$")
 
 
@@ -57,6 +58,7 @@ def normalize(token):
     """Makes flags comparable across the device builds (out dirs, variant names)."""
     token = re.sub(r"(^|[=I@])out(-arm64)?/", r"\1out/", token)
     token = VARIANT.sub(r"/VARIANT\2", token)
+    token = VARIANT_HASH.sub(r"\1/HASH/", token)  # newer versions: a directory per variant
     return re.sub(rf"(\$\{{m\.[^}}]+?)_({DEVICE_X86}|{DEVICE_ARM})", r"\1_VARIANT", token)
 
 
