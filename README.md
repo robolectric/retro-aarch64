@@ -14,6 +14,7 @@ build graphs, so it follows each branch's sources and flags, and changes no Andr
 |---|---|---|
 | `android12-hostruntime-dev` | `frameworks/base/core/jni:librobolectric-nativeruntime` (the default) | builds and passes the checks |
 | `android15-release`, `android15-qpr2-release` | `frameworks/base/core/jni:libandroid_runtime` | builds and passes the checks |
+| `24Q3-layoutlib-release` (internal) | `frameworks/base/core/jni:libandroid_runtime` | builds and passes the checks |
 | `android16-release` | `frameworks/base/core/jni:libandroid_runtime` | builds and passes the checks |
 | `android17-release` | `frameworks/base/core/jni:libandroid_runtime` | builds and passes the checks |
 

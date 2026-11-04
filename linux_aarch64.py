@@ -54,8 +54,11 @@ def soong(aosp, product, target, out_dir="out"):
     log(f"m {target} ({combo}, OUT_DIR={out_dir})")
     # Public trees can name modules AOSP does not publish (android16-release's conscrypt APEX
     # names "opensourcerequest"); with this a missing module only fails what builds it.
-    subprocess.run(["bash", "-c", f"export OUT_DIR={out_dir} ALLOW_MISSING_DEPENDENCIES=true;"
-                    " source build/envsetup.sh >/dev/null"
+    # The aarch64 build runs Soong's commands with ninja directly, without the reproxy that
+    # soong_ui starts for remote execution, so the graphs must not use it (internal trees
+    # enable it by default).
+    subprocess.run(["bash", "-c", f"export OUT_DIR={out_dir} ALLOW_MISSING_DEPENDENCIES=true"
+                    " USE_RBE=false; source build/envsetup.sh >/dev/null"
                     f" && lunch {combo} >/dev/null && m {target}"], cwd=aosp, check=True)
 
 
