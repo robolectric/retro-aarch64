@@ -55,8 +55,10 @@ finds them in the build.
    from the llvm-project revision of the clang prebuilt, and the Rust standard library
    (`cargo -Zbuild-std` with the Rust prebuilt's `rustc` and `rust-src`).
 5. **Build and checks**: the library is an AArch64 ELF, needs at most `GLIBC_2.17`, exports what
-   the x86_64 one does (less x86 SIMD code), and, if `qemu-aarch64` is installed, loads with
-   `RTLD_NOW` under the sysroot's glibc and has `JNI_OnLoad`.
+   the x86_64 one does (less x86 SIMD code), has no paths in the checkout, the cache or the
+   home directory compiled in, and, if `qemu-aarch64` is installed, loads with `RTLD_NOW` under
+   the sysroot's glibc and has `JNI_OnLoad`. The prebuilts of step 4 are built with their
+   source paths remapped, as the x86_64 ones are.
 
 ## Requirements
 

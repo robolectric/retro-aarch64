@@ -143,6 +143,20 @@ def verify(clang_bin, arm_library, x86_library, std_crates):
         f"exports what the x86_64 library does")
 
 
+def check_paths(library, prefixes):
+    """Fails if the library has a file name in one of the local directories compiled in, such as
+    a source path in an assertion message: the x86_64 build has none."""
+    data = library.read_bytes()
+    found = sorted({match.group().decode(errors="replace")
+                    for prefix in sorted({str(p) for p in prefixes} | {str(p.resolve()) for p in prefixes})
+                    for match in re.finditer(re.escape(prefix.encode()) + rb"/[\x21-\x7e]{0,80}", data)})
+    if found:
+        raise SystemExit(f"{library}: has local paths compiled in, e.g. {found[:5]}. Aarch64 "
+                         "prebuilts built by an older version of this script may have them; "
+                         "remove them from the checkout to rebuild them.")
+    log(f"Checked {library}: no paths in the checkout, the cache or the home directory")
+
+
 LOAD_TEST = r"""
 #include <dlfcn.h>
 #include <stdio.h>
@@ -250,6 +264,7 @@ def main():
     subprocess.run([str(aosp / "prebuilts/build-tools/linux-x86/bin/ninja"), "-f", OUT_NINJA,
                     arm_target], cwd=aosp, check=True)
     verify(clang / "bin", aosp / arm_target, aosp / x86_target, rust_std_crates(aosp))
+    check_paths(aosp / arm_target, [aosp, args.cache, Path.home()])
     load_test(clang, sysroot, aosp / arm_target,
               built_dependencies(aosp, clang / "bin", sysroot, aosp / arm_target))
 

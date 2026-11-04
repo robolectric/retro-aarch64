@@ -89,17 +89,28 @@ def tree_has(revision, path):
         raise
 
 
+def rust_commit(bin_dir):
+    output = subprocess.run([bin_dir / "rustc", "-vV"], check=True, capture_output=True,
+                            text=True).stdout
+    match = re.search(r"^commit-hash: ([0-9a-f]+)$", output, re.M)
+    return match.group(1) if match else "unknown"
+
+
 class Builder:
     def __init__(self, aosp, clang, sysroot, cache, ninja):
         self.aosp, self.clang, self.sysroot, self.cache, self.ninja = aosp, clang, sysroot, cache, ninja
         self.cross = [f"--sysroot={sysroot / 'sysroot'}", f"--gcc-toolchain={sysroot}"]
+        # The llvm-project sources and the builds are in the cache: keep its path out of the
+        # file names compiled into the runtimes (assertion messages), as the x86_64 ones do.
+        self.prefix_maps = [f"-ffile-prefix-map={path}/=" for path in sorted({str(cache),
+                                                                             str(cache.resolve())})]
 
     def cmake(self, source, build, *defines, link_tests=True, cxx_flags=""):
         cmake = shutil.which("cmake")
         if not cmake:
             raise SystemExit("cmake is required to build the llvm runtimes")
         shutil.rmtree(build, ignore_errors=True)
-        flags = " ".join(self.cross)
+        flags = " ".join(self.cross + self.prefix_maps)
         run([cmake, "-G", "Ninja", "-S", source, "-B", build,
              f"-DCMAKE_MAKE_PROGRAM={self.ninja}", "-DCMAKE_BUILD_TYPE=Release",
              "-DCMAKE_SYSTEM_NAME=Linux", "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
@@ -137,7 +148,8 @@ class Builder:
         work = self.cache / f"{self.clang.name}-ubsan_minimal"
         work.mkdir(parents=True, exist_ok=True)
         obj, archive = work / "ubsan_minimal_handlers.o", work / "libclang_rt.ubsan_minimal.a"
-        run([self.clang / "bin/clang++", f"--target={TRIPLE}", *self.cross, "-O3", "-std=c++17",
+        run([self.clang / "bin/clang++", f"--target={TRIPLE}", *self.cross, *self.prefix_maps,
+             "-O3", "-std=c++17",
              "-fPIC", "-fno-builtin", "-fno-exceptions", "-fno-rtti", "-fomit-frame-pointer",
              "-funwind-tables", "-fno-stack-protector", "-fvisibility=hidden", "-fno-lto",
              "-nostdinc++", f"-I{source / 'compiler-rt/lib'}", "-c",
@@ -195,13 +207,22 @@ class Builder:
         (work / "src/lib.rs").write_text("")
         linker = work / "linker"
         linker.write_text(f"#!/bin/sh\nexec {self.clang / 'bin/clang'} --target={TRIPLE} "
-                          f"{' '.join(self.cross)} -fuse-ld=lld \"$@\"\n")
+                          f"{' '.join(self.cross + self.prefix_maps)} -fuse-ld=lld \"$@\"\n")
         linker.chmod(0o755)
         env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(work), "RUSTC_BOOTSTRAP": "1",
                "RUSTC": str(bin_dir / "rustc"), "CARGO_HOME": str(self.cache / "cargo-home"),
                f"CARGO_TARGET_{RUST_TRIPLE.upper().replace('-', '_')}_LINKER": str(linker),
                f"CC_{RUST_TRIPLE.replace('-', '_')}": str(linker),
-               "CARGO_PROFILE_RELEASE_DEBUG": "2"}
+               "CARGO_PROFILE_RELEASE_DEBUG": "2",
+               # File names in panic messages and debug info as in the official standard
+               # library: /rustc/<commit>/library/... for rust-src, /rust/deps/... for the
+               # crates.io dependencies, instead of paths in the checkout and the cache. When
+               # several prefixes match, rustc uses the last one.
+               "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
+                   f"--remap-path-prefix={source}={target}" for source, target in [
+                       (self.cache, "/rust/cache"),
+                       (self.cache / "cargo-home/registry/src", "/rust/deps"),
+                       (toolchain / "lib/rustlib/src/rust", f"/rustc/{rust_commit(bin_dir)}")])}
         # Some cargo versions look vendored crates up as vendor/<name>-<version>; the prebuilt's
         # rust-src has them as vendor/<name>, so they get their versioned names too.
         vendor = toolchain / "lib/rustlib/src/rust/vendor"
