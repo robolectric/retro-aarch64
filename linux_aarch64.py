@@ -40,17 +40,20 @@ def log(message):
     print(message, flush=True)
 
 
-def soong(aosp, product, target, out_dir="out"):
+def soong(aosp, product, target, out_dir="out", release=None, variant="eng"):
     """Runs `m target` for `product` with build/envsetup.sh, which needs bash."""
     # Newer branches select a release configuration too: lunch <product>-<release>-<variant>.
-    # trunk_staging where the branch has it, otherwise the release the branch ships.
-    release = aosp / "build/release"
-    if (release / "release_configs/trunk_staging.textproto").exists():
-        combo = f"{product}-trunk_staging-eng"
-    elif release.exists():
-        combo = f"{product}-aosp_current-eng"
+    # The requested one, otherwise trunk_staging where the branch has it, otherwise the release
+    # the branch ships.
+    release_dir = aosp / "build/release"
+    if release:
+        combo = f"{product}-{release}-{variant}"
+    elif (release_dir / "release_configs/trunk_staging.textproto").exists():
+        combo = f"{product}-trunk_staging-{variant}"
+    elif release_dir.exists():
+        combo = f"{product}-aosp_current-{variant}"
     else:
-        combo = f"{product}-eng"
+        combo = f"{product}-{variant}"
     log(f"m {target} ({combo}, OUT_DIR={out_dir})")
     # Public trees can name modules AOSP does not publish (android16-release's conscrypt APEX
     # names "opensourcerequest"); with this a missing module only fails what builds it.
@@ -62,12 +65,12 @@ def soong(aosp, product, target, out_dir="out"):
                     f" && lunch {combo} >/dev/null && m {target}"], cwd=aosp, check=True)
 
 
-def host_library(aosp, product, directory, name):
+def host_library(aosp, product, directory, name, release=None, variant="eng"):
     """The path of the library's x86_64 host build, from Soong's graph (newer versions put the
     variant's outputs under a hash directory)."""
     ninja = ninja_rewrite.soong_ninja(aosp, "out", product)
     if not ninja.exists():
-        soong(aosp, product, "nothing")
+        soong(aosp, product, "nothing", release=release, variant=variant)
         ninja = ninja_rewrite.soong_ninja(aosp, "out", product)
     path = re.compile(rf"out/soong/\.intermediates/{re.escape(directory)}/{re.escape(name)}/"
                       rf"{ninja_rewrite.HOST}_shared/(?:[0-9a-f]{{32}}/)?{re.escape(name)}\.so"
@@ -202,6 +205,10 @@ def main():
                         help="<directory>:<name> of a cc_library_shared that builds for the host")
     parser.add_argument("--host-product", default="aosp_x86_64")
     parser.add_argument("--device-arm-product", default="aosp_arm64")
+    parser.add_argument("--release", help="release configuration (TARGET_RELEASE) of both builds,"
+                        " e.g. the one the branch's own builds use; default: trunk_staging where"
+                        " the branch has it, otherwise the release the branch ships")
+    parser.add_argument("--variant", default="eng", help="build variant (TARGET_BUILD_VARIANT)")
     parser.add_argument("--cache", type=Path, default=Path.home() / ".cache/aosp-linux-aarch64")
     args = parser.parse_args()
     aosp = args.checkout.resolve()
@@ -217,9 +224,10 @@ def main():
     # 2. The x86_64 host build (also the reference for the exports) and the arm64 device graph.
     # Soong runs every time: it is incremental, and the checkout may have been synced since the
     # graphs and the x86_64 library were made, which would leave both stale.
-    x86_target = host_library(aosp, args.host_product, directory, name)
-    soong(aosp, args.host_product, x86_target)
-    soong(aosp, args.device_arm_product, "nothing", DEVICE_ARM_OUT)
+    config = {"release": args.release, "variant": args.variant}
+    x86_target = host_library(aosp, args.host_product, directory, name, **config)
+    soong(aosp, args.host_product, x86_target, **config)
+    soong(aosp, args.device_arm_product, "nothing", DEVICE_ARM_OUT, **config)
     device_arm_ninja = ninja_rewrite.soong_ninja(aosp, DEVICE_ARM_OUT, args.device_arm_product)
     host_ninja = ninja_rewrite.soong_ninja(aosp, "out", args.host_product)
     clang = clang_dir(aosp, host_ninja)

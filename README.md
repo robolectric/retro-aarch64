@@ -7,8 +7,15 @@ Soong only builds Linux host code for x86_64. This derives an aarch64 build from
 build graphs, so it follows each branch's sources and flags, and changes no Android source.
 
 ```
-./linux_aarch64.py --checkout <checkout> --module <directory>:<cc_library_shared name>
+./linux_aarch64.py --checkout <checkout> --module <directory>:<cc_library_shared name> \
+    [--release <TARGET_RELEASE>] [--variant <TARGET_BUILD_VARIANT>]
 ```
+
+The release configuration selects the flag values compiled into the library. Pass the ones the
+branch's own builds use (for internal branches, the `TARGET_RELEASE` and `TARGET_BUILD_VARIANT` in
+the branch's build configuration, e.g. `--release ap3a --variant userdebug` for
+`24Q3-layoutlib-release`); by default, the builds use `trunk_staging` where the branch has it,
+otherwise the release the branch ships, and `eng`.
 
 | Tree | Module | Result |
 |---|---|---|
