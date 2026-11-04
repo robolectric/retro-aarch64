@@ -101,9 +101,14 @@ class Builder:
         self.aosp, self.clang, self.sysroot, self.cache, self.ninja = aosp, clang, sysroot, cache, ninja
         self.cross = [f"--sysroot={sysroot / 'sysroot'}", f"--gcc-toolchain={sysroot}"]
         # The llvm-project sources and the builds are in the cache: keep its path out of the
-        # file names compiled into the runtimes (assertion messages), as the x86_64 ones do.
+        # file names compiled into the runtimes (assertion messages), and name the llvm-project
+        # sources out/llvm-project/... as Android's LLVM builds do. Clang uses the last matching
+        # map, so the llvm-project one goes last.
+        llvm_root = cache / f"llvm-project-{llvm_revision(clang)[:12]}"
         self.prefix_maps = [f"-ffile-prefix-map={path}/=" for path in sorted({str(cache),
                                                                              str(cache.resolve())})]
+        self.prefix_maps += [f"-ffile-prefix-map={path}/=out/llvm-project/"
+                             for path in sorted({str(llvm_root), str(llvm_root.resolve())})]
 
     def cmake(self, source, build, *defines, link_tests=True, cxx_flags=""):
         cmake = shutil.which("cmake")
@@ -221,7 +226,6 @@ class Builder:
                "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
                    f"--remap-path-prefix={source}={target}" for source, target in [
                        (self.cache, "/rust/cache"),
-                       (self.cache / "cargo-home/registry/src", "/rust/deps"),
                        (toolchain / "lib/rustlib/src/rust", f"/rustc/{rust_commit(bin_dir)}")])}
         # Some cargo versions look vendored crates up as vendor/<name>-<version>; the prebuilt's
         # rust-src has them as vendor/<name>, so they get their versioned names too.
@@ -236,9 +240,16 @@ class Builder:
             versioned = vendor / f"{name}-{version}"
             if not versioned.exists():
                 versioned.symlink_to(crate.name)
+        # The crates.io dependencies as /rust/deps/<name>-<version>, as in the official standard
+        # library, without the registry's index directory: fetch them first to know its name.
+        build_std = ["-Zbuild-std=std,panic_unwind,panic_abort", "--target", RUST_TRIPLE]
+        run([bin_dir / "cargo", "fetch"] + build_std, cwd=work, env=env, stdout=subprocess.DEVNULL)
+        env["CARGO_ENCODED_RUSTFLAGS"] += "".join(
+            f"\x1f--remap-path-prefix={index}=/rust/deps"
+            for index in sorted((self.cache / "cargo-home/registry/src").glob("*/")))
         log(f"Building the Rust standard library for {RUST_TRIPLE} with {bin_dir / 'rustc'}")
-        run([bin_dir / "cargo", "build", "--release", "-Zbuild-std=std,panic_unwind,panic_abort",
-             "--target", RUST_TRIPLE], cwd=work, env=env, stdout=subprocess.DEVNULL)
+        run([bin_dir / "cargo", "build", "--release"] + build_std, cwd=work, env=env,
+            stdout=subprocess.DEVNULL)
         return work / "target" / RUST_TRIPLE / "release/deps"
 
 
